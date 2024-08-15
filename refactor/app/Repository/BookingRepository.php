@@ -2180,5 +2180,130 @@ class BookingRepository extends BaseRepository
         
         return sprintf($format, $hours, $minutes);
     }
+    
+    /**
+     * Mark a job to be ignored.
+     *
+     * @param int $id
+     * @return array
+     */
+    public function ignoreExpiring($id)
+    {
+        $job = Job::findOrFail($id);
+        $job->ignore = 1;
+        $job->save();
+        return ['success', 'Changes saved'];
+    }
+
+    /**
+     * Mark a job as expired.
+     *
+     * @param int $id
+     * @return array
+     */
+    public function ignoreExpired($id)
+    {
+        $job = Job::findOrFail($id);
+        $job->ignore_expired = 1;
+        $job->save();
+        return ['success', 'Changes saved'];
+    }
+
+    /**
+     * Mark a throttle entry to be ignored.
+     *
+     * @param int $id
+     * @return array
+     */
+    public function ignoreThrottle($id)
+    {
+        $throttle = Throttles::findOrFail($id);
+        $throttle->ignore = 1;
+        $throttle->save();
+        return ['success', 'Changes saved'];
+    }
+
+    /**
+     * Reopen a job, either updating an existing job or creating a new one.
+     *
+     * @param \Illuminate\Http\Request $request
+     * @return array
+     */
+    public function reopen(Request $request)
+    {
+        $jobid = $request->input('jobid');
+        $userid = $request->input('userid');
+
+        $job = Job::findOrFail($jobid)->toArray();
+
+        $currentTime = Carbon::now();
+        $created_at = $currentTime->format('Y-m-d H:i:s');
+        $willExpireAt = TeHelper::willExpireAt($job['due'], $created_at);
+
+        $data = [
+            'created_at' => $created_at,
+            'will_expire_at' => $willExpireAt,
+            'updated_at' => $created_at,
+            'user_id' => $userid,
+            'job_id' => $jobid,
+            'cancel_at' => $currentTime,
+        ];
+
+        $datareopen = [
+            'status' => 'pending',
+            'created_at' => $currentTime,
+            'will_expire_at' => TeHelper::willExpireAt($job['due'], $currentTime->format('Y-m-d H:i:s')),
+        ];
+
+        if ($job['status'] !== 'timedout') {
+            // Update existing job
+            Job::where('id', $jobid)->update($datareopen);
+            $new_jobid = $jobid;
+        } else {
+            // Create a new job
+            $job['status'] = 'pending';
+            $job['created_at'] = $currentTime;
+            $job['updated_at'] = $currentTime;
+            $job['will_expire_at'] = TeHelper::willExpireAt($job['due'], $currentTime->format('Y-m-d H:i:s'));
+            $job['cust_16_hour_email'] = 0;
+            $job['cust_48_hour_email'] = 0;
+            $job['admin_comments'] = 'This booking is a reopening of booking #' . $jobid;
+            $newJob = Job::create($job);
+            $new_jobid = $newJob->id;
+        }
+
+        // Update and create translator records
+        Translator::where('job_id', $jobid)->whereNull('cancel_at')->update(['cancel_at' => $data['cancel_at']]);
+        Translator::create($data);
+
+        // Notify and return response
+        if (isset($new_jobid)) {
+            $this->sendNotificationByAdminCancelJob($new_jobid);
+            return ["Tolk cancelled!"];
+        } else {
+            return ["Please try again!"];
+        }
+    }
+
+    /**
+     * Convert minutes to a formatted string showing hours and minutes.
+     *
+     * @param int $time Number of minutes
+     * @param string $format Format for output string
+     * @return string Formatted time string
+     */
+    private function convertToHoursMins($time, $format = '%02dh %02dmin')
+    {
+        if ($time < 60) {
+            return $time . 'min';
+        } elseif ($time == 60) {
+            return '1h';
+        }
+
+        $hours = floor($time / 60);
+        $minutes = $time % 60;
+        
+        return sprintf($format, $hours, $minutes);
+    }
 
 }
